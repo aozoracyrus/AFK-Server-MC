@@ -1,0 +1,7 @@
+node_modules
+.git
+.env
+.mc-profiles
+data
+*.log
+README.md
