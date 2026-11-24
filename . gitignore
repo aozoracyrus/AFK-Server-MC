@@ -1,0 +1,6 @@
+node_modules/
+.env
+.mc-profiles/
+data/
+*.log
+package-lock.json
