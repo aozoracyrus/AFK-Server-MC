@@ -1,0 +1,16 @@
+{
+  "name": "mc-afk-bot",
+  "version": "4.0.0",
+  "private": true,
+  "type": "commonjs",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --env-file=.env src/index.js",
+    "check": "node scripts/check.js",
+    "ping": "node scripts/ping.js"
+  },
+  "dependencies": {
+    "mineflayer": "4.39.0"
+  }
+}
