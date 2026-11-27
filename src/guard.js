@@ -1,46 +1,45 @@
-'use strict';
+const { createBot } = require('./bot');
+const config = require('./config');
+const { log } = require('./logger');
+const { sendDiscord } = require('./notify');
 
-/**
- * Server 26.3 chỉ cho 1 packet position mỗi client tick, và chỉ reset cờ khi nhận
- * client_tick_end. mineflayer 4.39.0 không gửi packet đó -> bị kick ~1.5s sau khi join.
- *
- *  freeze : chặn mọi packet movement -> không bao giờ chạm luật trên.
- *  tick   : gửi movement + ghép tick_end NGAY tại thời điểm ghi ra wire.
- *  native : server < 26.3 -> không gọi hàm này.
- *
- * KHÔNG buffer/throttle movement ở nơi khác: lệch cặp là kick lại.
- */
-const MOVE = new Set(['position', 'position_look', 'look', 'flying']);
+let reconnectTimer = null;
+let isRunning = false;
 
-function installGuard(bot, log, { mode = 'freeze', tickEnd = true } = {}) {
-  const client = bot._client;
-  if (!client || typeof client.write !== 'function') {
-    log.warn('guard skipped: client not ready');
-    return null;
+function startGuard() {
+  if (isRunning) {
+    log('main', 'Guard đã chạy, không tạo thêm instance');
+    return;
   }
-  const origWrite = client.write.bind(client);
-
-  let canTickEnd = false;
-  if (tickEnd) {
-    try { origWrite('tick_end', {}); canTickEnd = true; } catch { /* protocol < 1.21.2 */ }
-  }
-
-  const stats = { moveSent: 0, moveDropped: 0, tickEndSent: canTickEnd ? 1 : 0 };
-
-  client.write = (name, packet) => {
-    if (mode === 'freeze' && MOVE.has(name)) { stats.moveDropped++; return undefined; }
-    const result = origWrite(name, packet);
-    if (MOVE.has(name)) {
-      stats.moveSent++;
-      if (canTickEnd) {
-        try { origWrite('tick_end', {}); stats.tickEndSent++; } catch { /* ignore */ }
-      }
-    }
-    return result;
-  };
-
-  log.info('guard installed', { mode, canTickEnd, version: bot.version });
-  return { stats: () => ({ ...stats }) };
+  isRunning = true;
+  log('main', '🚀 Khởi động Minecraft AFK Bot', '🤖');
+  log('main', `Endpoint: ${config.endpoint}`);
+  log('main', `Username: ${config.username}`);
+  sendDiscord(`🚀 Bot khởi động. Endpoint: ${config.endpoint}`);
+  connect();
 }
 
-module.exports = { installGuard };
+function connect() {
+  createBot(() => {
+    // onDisconnect callback
+    scheduleReconnect();
+  });
+}
+
+function scheduleReconnect() {
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+
+  log('reconnect', `Lên lịch kết nối lại sau ${config.watchdog.retryDelay / 1000}s`, '🔄');
+  reconnectTimer = setTimeout(() => {
+    log('reconnect', 'Bắt đầu kết nối lại...', '🚀');
+    connect();
+  }, config.watchdog.retryDelay);
+}
+
+function stopGuard() {
+  isRunning = false;
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  log('main', 'Đã tắt guard', '👋');
+}
+
+module.exports = { startGuard, stopGuard };
