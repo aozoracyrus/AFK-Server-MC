@@ -1,28 +1,48 @@
-'use strict';
+const mineflayer = require('mineflayer');
+const config = require('../src/config');
 
-// npm run check — soi cú pháp toàn bộ file trước khi chạy.
-const { readdirSync } = require('node:fs');
-const { execFileSync } = require('node:child_process');
-const path = require('node:path');
+console.log(`Kiểm tra server: ${config.endpoint} qua ${config.hub.host}`);
 
-const root = path.join(__dirname, '..');
-const files = [];
-for (const dir of ['src', 'scripts']) {
-  for (const f of readdirSync(path.join(root, dir))) {
-    if (f.endsWith('.js')) files.push(path.join(dir, f));
+const bot = mineflayer.createBot({
+  host: config.hub.host,
+  port: config.hub.port,
+  username: 'CheckBot_' + Date.now(),
+  version: config.version,
+  auth: 'offline',
+});
+
+bot.once('login', () => {
+  setTimeout(() => {
+    bot.chat(`/browser join ${config.endpoint}`);
+  }, 2000);
+});
+
+bot.on('chat', (username, message) => {
+  const msg = message.toLowerCase();
+  if (msg.includes('register') || msg.includes('password') || msg.includes('/login')) {
+    console.log('✅ SERVER GỐC ĐANG HOẠT ĐỘNG (phát hiện PAL)');
+    bot.quit();
+    process.exit(0);
   }
-}
-
-let bad = 0;
-for (const f of files) {
-  try {
-    execFileSync(process.execPath, ['--check', path.join(root, f)], { stdio: 'pipe' });
-    console.log('OK   ' + f);
-  } catch (err) {
-    bad += 1;
-    console.error('FAIL ' + f);
-    console.error(err.stderr ? err.stderr.toString() : err.message);
+  if (msg.includes('not found') || msg.includes('does not exist')) {
+    console.log('❌ Endpoint không tồn tại');
+    bot.quit();
+    process.exit(1);
   }
-}
-console.log(bad ? `\n${bad} file lỗi cú pháp` : '\nSYNTAX OK');
-process.exit(bad ? 1 : 0);
+});
+
+bot.on('end', () => {
+  console.log('⚠️ Không thể xác nhận trạng thái server');
+  process.exit(1);
+});
+
+bot.on('error', (err) => {
+  console.log('⚠️ Lỗi:', err.message);
+  process.exit(1);
+});
+
+setTimeout(() => {
+  console.log('⏱️ Timeout - server có thể đang tắt');
+  bot.quit();
+  process.exit(1);
+}, 25000);
