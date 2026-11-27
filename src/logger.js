@@ -1,27 +1,24 @@
-'use strict';
+const TAG_COLORS = {
+  init: '🔵',
+  origin: '📡',
+  verify: '🎯',
+  auth: '🔐',
+  main: '🤖',
+  watchdog: '⏱️',
+  reconnect: '🔄',
+  kick: '❌',
+  error: '⚠️',
+  end: '🔌',
+  spawn: '🌍',
+  chat: '💬',
+  notify: '📢',
+};
 
-const LEVELS = { debug: 10, info: 20, warn: 30, error: 40 };
-const threshold = LEVELS[(process.env.LOG_LEVEL || 'info').toLowerCase()] ?? LEVELS.info;
-
-function safeJson(meta) {
-  try { return JSON.stringify(meta); } catch { return '"[unserializable]"'; }
+function log(tag, msg, emoji = '') {
+  const time = new Date().toISOString();
+  const color = TAG_COLORS[tag] || '📝';
+  const prefix = emoji || color;
+  console.log(`${time} [${tag}] ${prefix} ${msg}`);
 }
 
-function emit(level, scope, msg, meta) {
-  if (LEVELS[level] < threshold) return;
-  const line = `${new Date().toISOString()} ${level.toUpperCase().padEnd(5)} [${scope}] ${msg}`;
-  const write = level === 'error' ? console.error : console.log;
-  write(meta === undefined ? line : `${line} ${safeJson(meta)}`);
-}
-
-function createLogger(scope) {
-  return {
-    debug: (m, x) => emit('debug', scope, m, x),
-    info: (m, x) => emit('info', scope, m, x),
-    warn: (m, x) => emit('warn', scope, m, x),
-    error: (m, x) => emit('error', scope, m, x),
-    child: (sub) => createLogger(`${scope}:${sub}`),
-  };
-}
-
-module.exports = { createLogger };
+module.exports = { log };
