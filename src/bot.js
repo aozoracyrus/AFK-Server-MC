@@ -6,6 +6,7 @@ const { sendDiscord } = require('./notify');
 let inRealServer = false;
 let registered = false;
 let watchdogTimer = null;
+let botFullyLoaded = false;  // Flag mới: bot đã fully loaded chưa
 
 function createBot(onDisconnect) {
   log('init', `Kết nối vào HUB: ${config.hub.host}:${config.hub.port}`);
@@ -29,6 +30,17 @@ function createBot(onDisconnect) {
     }, 2000);
   });
 
+  // SPAWN - bot đã vào world (chưa fully loaded)
+  bot.on('spawn', () => {
+    log('spawn', 'Bot đã spawn trong world', '🌍');
+  });
+
+  // PHYSICS TICK - bot đã fully loaded (world + entities + packets)
+  bot.once('physicTick', () => {
+    botFullyLoaded = true;
+    log('verify', '✅ Bot đã fully loaded (ready để gửi lệnh)', '🎯');
+  });
+
   // CHAT - dùng để verify PAL
   bot.on('chat', (username, message) => {
     const msg = message.toLowerCase();
@@ -41,11 +53,19 @@ function createBot(onDisconnect) {
         log('verify', '✅ Đã vào SERVER GỐC (phát hiện PAL)', '🎯');
         log('verify', `Message trigger: "${message}"`);
 
-        setTimeout(() => {
-          const cmd = `/register ${config.password} ${config.password}`;
-          log('origin', `Gửi: ${cmd}`);
-          bot.chat(cmd);
-        }, 1500);
+        // CHỜ bot fully loaded rồi mới gửi lệnh (delay 3 giây)
+        const sendRegister = () => {
+          if (botFullyLoaded) {
+            const cmd = `/register ${config.password} ${config.password}`;
+            log('origin', `Gửi: ${cmd}`);
+            bot.chat(cmd);
+          } else {
+            log('verify', '⏳ Chờ bot fully loaded...', '⏱️');
+            setTimeout(sendRegister, 1000);
+          }
+        };
+
+        setTimeout(sendRegister, 3000);  // Delay 3 giây sau khi thấy PAL
       }
     }
 
@@ -62,7 +82,11 @@ function createBot(onDisconnect) {
       registered = true;
       log('auth', '⚠️ Đã đăng ký từ trước. Gửi /login...', '🔐');
       setTimeout(() => {
-        bot.chat(`/login ${config.password}`);
+        if (botFullyLoaded) {
+          bot.chat(`/login ${config.password}`);
+        } else {
+          setTimeout(() => bot.chat(`/login ${config.password}`), 2000);
+        }
       }, 1000);
     }
 
@@ -93,13 +117,10 @@ function createBot(onDisconnect) {
     onDisconnect();
   });
 
-  bot.on('spawn', () => {
-    log('spawn', 'Bot đã spawn trong world', '🌍');
-  });
-
   function cleanup() {
     inRealServer = false;
     registered = false;
+    botFullyLoaded = false;
     clearTimeout(watchdogTimer);
   }
 
