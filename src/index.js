@@ -24,12 +24,10 @@ function getAutoPassword(username) {
   let hash = 0;
   const text = username + salt;
   for (let i = 0; i < text.length; i++) {
-    const char = text.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
+    hash = ((hash << 5) - hash) + text.charCodeAt(i);
     hash = hash & hash;
   }
-  const absHash = Math.abs(hash).toString(36).toUpperCase().padEnd(6, 'X');
-  return `Auto_${absHash}_${username.substring(0, 4)}`;
+  return `Auto_${Math.abs(hash).toString(36).toUpperCase().padEnd(6, 'X')}_${username.substring(0, 4)}`;
 }
 
 const SERVER_VERSION = str(process.env.MC_SERVER_VERSION, '26.3');
@@ -46,12 +44,10 @@ const cfg = {
   gatePort: num(process.env.GATE_PORT, 25565),
   gateEndpoint: str(process.env.GATE_ENDPOINT, 'mzero-263'),
   gateJoinCmd: str(process.env.GATE_JOIN_CMD, '/browser join {endpoint}'),
-  gateDelayMs: num(process.env.GATE_DELAY_MS, 3000),
-  gateWaitMs: num(process.env.GATE_WAIT_MS, 5000),
+  gateDelayMs: num(process.env.GATE_DELAY_MS, 1500),
 
   originRegCmd: '/register {password} {password}',
   originLoginCmd: '/login {password}',
-  originFirstDelay: num(process.env.ORIGIN_FIRST_DELAY || 2000, 2000),
   originSettle: num(process.env.ORIGIN_SETTLE || 4000, 4000),
   originTimeout: num(process.env.ORIGIN_TIMEOUT || 45000, 45000),
 
@@ -66,9 +62,8 @@ const cfg = {
   autoEat: bool(process.env.AFK_AUTO_EAT, true),
 
   httpPort: num(process.env.PORT, 8080),
-  retryMin: num(process.env.RETRY_MIN, 15000),
-  retryMax: num(process.env.RETRY_MAX, 300000),
-  resetAfter: num(process.env.RESET_AFTER, 60000),
+  retryMin: num(process.env.RETRY_MIN, 5000),
+  retryMax: num(process.env.RETRY_MAX, 120000),
   needsGuard: NEEDS_GUARD,
 };
 
@@ -77,7 +72,6 @@ function validate() {
   if (!cfg.username || cfg.username.length > 16 || !/^[A-Za-z0-9_]+$/.test(cfg.username)) e.push('MC_USERNAME invalid');
   if (!['offline', 'microsoft'].includes(cfg.auth)) e.push('MC_AUTH invalid');
   if (!cfg.gateHost || !cfg.gateEndpoint) e.push('GATE config missing');
-  if (cfg.gateJoinCmd.indexOf('{endpoint}') === -1) e.push('GATE_JOIN_CMD missing {endpoint}');
   if (cfg.minGap < 11000) e.push('MC_MIN_GAP must be >= 11000');
   if (e.length) throw new Error('Config Error:\n  - ' + e.join('\n  - '));
 }
@@ -97,14 +91,14 @@ function installGuard(bot, mode, tickEnd) {
   if (!client || typeof client.write !== 'function') return null;
   const orig = client.write.bind(client);
   let canTick = false;
-  if (tickEnd) { try { orig('tick_end', {}); canTick = true; } catch(e) {} }
+  if (tickEnd) { try { orig('tick_end', {}); canTick = true; } catch (e) {} }
   const stats = { sent: 0, dropped: 0, tick: canTick ? 1 : 0 };
   client.write = (name, pkt) => {
     if (mode === 'freeze' && MOVE_PKTS.has(name)) { stats.dropped++; return; }
     const res = orig(name, pkt);
     if (MOVE_PKTS.has(name)) {
       stats.sent++;
-      if (canTick) { try { orig('tick_end', {}); stats.tick++; } catch(e) {} }
+      if (canTick) { try { orig('tick_end', {}); stats.tick++; } catch (e) {} }
     }
     return res;
   };
@@ -121,16 +115,11 @@ const RX = {
 
 function createOriginFlow(send, infoObj, onReady, onFatal) {
   let registered = infoObj.originReg || false;
-  let ready = false, stopped = false;
-  let lastSent = 0;
-  let attempt = 0;
+  let ready = false, stopped = false, lastSent = 0, attempt = 0;
   const timers = new Set();
   const pass = cfg.autoPassword;
 
-  const later = (fn, ms) => {
-    const t = setTimeout(() => { timers.delete(t); fn(); }, ms);
-    timers.add(t); return t;
-  };
+  const later = (fn, ms) => { const t = setTimeout(() => { timers.delete(t); fn(); }, ms); timers.add(t); return t; };
   const clear = () => { for (const t of timers) clearTimeout(t); timers.clear(); };
 
   const sendCmd = (kind, tpl) => {
@@ -138,46 +127,36 @@ function createOriginFlow(send, infoObj, onReady, onFatal) {
     const now = Date.now();
     if (now - lastSent < cfg.minGap) return false;
     lastSent = now;
-    const payload = tpl.replace('{password}', pass);
-    log('info', 'origin', 'send', { cmd: payload.split(' ')[0], attempt: ++attempt });
-    send(payload);
+    log('info', 'origin', 'send', { cmd: tpl.split(' ')[0], attempt: ++attempt });
+    send(tpl.replace('{password}', pass));
     return true;
   };
 
   const markReady = (why) => {
     if (ready || stopped) return;
-    ready = true; infoObj.originReady = true;
-    clear(); log('info', 'origin', 'ready & AFK started', { why, registered });
+    ready = true; infoObj.originReady = true; clear();
+    log('info', 'origin', 'ready & AFK', { why, registered });
     onReady();
   };
 
-  const doLogin = () => {
-    if (stopped || ready) return;
-    sendCmd('login', cfg.originLoginCmd);
-    later(() => markReady('settle_after_login'), cfg.originSettle);
-  };
-
-  const doRegister = () => {
-    if (stopped || ready) return;
-    const ok = sendCmd('reg', cfg.originRegCmd);
-    infoObj.originReg = true;
-    later(() => { if (!ready) markReady('settle_after_register'); }, cfg.originSettle);
-  };
+  const doLogin = () => { if (stopped || ready) return; sendCmd('login', cfg.originLoginCmd); later(() => markReady('settle_login'), cfg.originSettle); };
+  const doRegister = () => { if (stopped || ready) return; sendCmd('reg', cfg.originRegCmd); infoObj.originReg = true; later(() => { if (!ready) markReady('settle_reg'); }, cfg.originSettle); };
 
   const handleMessage = (raw) => {
     if (stopped) return;
     const m = String(raw || '');
     if (RX.wrong.test(m)) { stopped = true; clear(); onFatal('wrong-password'); return; }
-    if (RX.regOk.test(m)) { infoObj.originReg = true; markReady('registered_successfully'); return; }
+    if (RX.regOk.test(m)) { infoObj.originReg = true; markReady('reg_ok'); return; }
     if (RX.regDup.test(m)) { infoObj.originReg = true; doLogin(); return; }
-    if (RX.loginOk.test(m)) { infoObj.originReg = true; markReady('login_success'); return; }
+    if (RX.loginOk.test(m)) { infoObj.originReg = true; markReady('login_ok'); return; }
     if (RX.needReg.test(m)) { infoObj.originReg = false; doRegister(); }
   };
 
+  // GỬI NGAY, không delay — vì bot chỉ sống được ~1 giây trước khi bị kick
   const start = () => {
-    log('info', 'origin', 'start auth flow', { registered, autoPass: pass });
-    later(() => { if (registered) doLogin(); else doRegister(); }, cfg.originFirstDelay);
-    later(() => markReady('fallback_timeout'), cfg.originTimeout);
+    log('info', 'origin', 'start auth (immediate)', { registered });
+    if (registered) doLogin(); else doRegister();
+    later(() => markReady('fallback'), cfg.originTimeout);
   };
 
   return { start, stop: () => { stopped = true; clear(); }, handleMessage };
@@ -187,14 +166,10 @@ function runSession(state, signal, events) {
   return new Promise((resolve) => {
     let done = false, guard = null, flow = null;
     let afkTimer = null, spawnTimer = null, statsTimer = null;
-    let spawnCount = 0, activityStarted = false, eating = false;
-    let gateJoinSent = false;
+    let spawnCount = 0, activityStarted = false, eating = false, joinSent = false;
     const pending = new Set();
 
-    const later = (fn, ms) => {
-      const t = setTimeout(() => { pending.delete(t); fn(); }, ms);
-      pending.add(t); return t;
-    };
+    const later = (fn, ms) => { const t = setTimeout(() => { pending.delete(t); fn(); }, ms); pending.add(t); return t; };
 
     log('info', 'main', 'connecting', { target: cfg.gateHost + ':' + cfg.gatePort, user: cfg.username });
 
@@ -202,7 +177,7 @@ function runSession(state, signal, events) {
     try {
       bot = mineflayer.createBot({
         host: cfg.gateHost, port: cfg.gatePort, username: cfg.username, auth: cfg.auth,
-        version: cfg.clientVersion || undefined, checkTimeoutInterval: 60000,
+        version: cfg.clientVersion || undefined, checkTimeoutInterval: 90000,
         hideErrors: true, logErrors: false,
       });
     } catch (err) {
@@ -214,31 +189,26 @@ function runSession(state, signal, events) {
     const finish = (reason) => {
       if (done) return;
       done = true;
-      clearTimeout(afkTimer); clearTimeout(spawnTimer);
-      clearInterval(statsTimer);
-      for (const t of pending) clearTimeout(t);
-      pending.clear();
+      clearTimeout(afkTimer); clearTimeout(spawnTimer); clearInterval(statsTimer);
+      for (const t of pending) clearTimeout(t); pending.clear();
       if (flow) flow.stop();
       if (signal) signal.removeEventListener('abort', onAbort);
       state.connected = false; state.ready = false; state.lastReason = reason;
-      try { bot.quit('bye'); } catch(e) {}
-      try { bot.end(); } catch(e) {}
+      try { bot.quit('bye'); } catch (e) {}
+      try { bot.end(); } catch (e) {}
       events.emit('offline', { reason });
       resolve({ reason });
     };
 
     const onAbort = () => finish('shutdown');
-    if (signal) {
-      signal.addEventListener('abort', onAbort, { once: true });
-      if (signal.aborted) { finish('shutdown'); return; }
-    }
+    if (signal) { signal.addEventListener('abort', onAbort, { once: true }); if (signal.aborted) { finish('shutdown'); return; } }
 
-    const safeChat = (cmd) => { if (!done) try { bot.chat(cmd); } catch(e) {} };
+    const safeChat = (cmd) => { if (!done) try { bot.chat(cmd); } catch (e) {} };
 
     const startActivity = () => {
       if (activityStarted || done) return;
       activityStarted = true; state.ready = true;
-      log('info', 'main', 'ACTIVITY STARTED (AFK MODE)', { mode: cfg.mode });
+      log('info', 'main', 'ACTIVITY STARTED', { mode: cfg.mode });
       afkTimer = setTimeout(afkTick, rand(3000, 8000));
       events.emit('ready', {});
     };
@@ -248,21 +218,14 @@ function runSession(state, signal, events) {
       try {
         if (cfg.mode === 'tick') {
           bot.look(Math.random() * Math.PI * 2, (Math.random() - 0.5) * 1.2, false);
-          if (Math.random() < 0.5) {
-            bot.setControlState('jump', true);
-            later(() => { try { bot.setControlState('jump', false); } catch(e) {} }, 320);
-          }
+          if (Math.random() < 0.5) { bot.setControlState('jump', true); later(() => { try { bot.setControlState('jump', false); } catch (e) {} }, 320); }
         } else {
           const pick = rand(0, 3);
-          if (pick === 0) { try { bot.swingArm('right'); } catch(e) { try { bot.swingArm(); } catch(e2) {} } }
-          else if (pick === 1) {
-            bot.setControlState('sneak', true);
-            later(() => { try { bot.setControlState('sneak', false); } catch(e) {} }, 400);
-          } else {
-            bot.setQuickBarSlot(rand(0, 8));
-          }
+          if (pick === 0) { try { bot.swingArm('right'); } catch (e) { try { bot.swingArm(); } catch (e2) {} } }
+          else if (pick === 1) { bot.setControlState('sneak', true); later(() => { try { bot.setControlState('sneak', false); } catch (e) {} }, 400); }
+          else { bot.setQuickBarSlot(rand(0, 8)); }
         }
-      } catch(e) {}
+      } catch (e) {}
       afkTimer = setTimeout(afkTick, rand(cfg.afkMin, cfg.afkMax));
     };
 
@@ -271,46 +234,34 @@ function runSession(state, signal, events) {
     bot.on('spawn', () => {
       spawnCount++;
       clearTimeout(spawnTimer);
-      if (!guard && cfg.needsGuard && cfg.mode !== 'native') {
-        guard = installGuard(bot, cfg.mode, cfg.tickEnd);
-      }
-      if (cfg.mode === 'freeze') { try { bot.physicsEnabled = false; } catch(e) {} }
-      try { if (typeof bot.setSettings === 'function') bot.setSettings({ viewDistance: cfg.viewDist }); } catch(e) {}
+      if (!guard && cfg.needsGuard && cfg.mode !== 'native') guard = installGuard(bot, cfg.mode, cfg.tickEnd);
+      if (cfg.mode === 'freeze') { try { bot.physicsEnabled = false; } catch (e) {} }
+      try { if (typeof bot.setSettings === 'function') bot.setSettings({ viewDistance: cfg.viewDist }); } catch (e) {}
 
-      state.connected = true;
-      state.lastConnectedAt = new Date().toISOString();
+      state.connected = true; state.lastConnectedAt = new Date().toISOString();
       if (spawnCount === 1) state.sessions++;
-
       log('info', 'main', 'spawned', { n: spawnCount, ping: bot.player?.ping });
 
-      if (spawnCount === 1) {
-        events.emit('online', { sessions: state.sessions });
-        
-        // Stage 1: Gửi /browser join
-        log('info', 'gate', 'sending join command');
+      // Lần spawn đầu: gửi /browser join
+      if (!joinSent) {
+        joinSent = true;
         later(() => {
           const cmd = cfg.gateJoinCmd.replace('{endpoint}', cfg.gateEndpoint);
           log('info', 'gate', 'send', { cmd: cmd.split(' ')[0] });
           safeChat(cmd);
-          gateJoinSent = true;
-          
-          // Stage 2: Đợi 5 giây rồi bắt đầu origin flow (không cần chờ transfer packet)
+          // KHÔNG chờ transfer packet. Sau 1.5s bắt đầu origin flow ngay.
           later(() => {
-            log('info', 'main', 'starting origin flow after gate wait');
+            log('info', 'main', 'origin flow start (no transfer wait)');
             flow = createOriginFlow(safeChat, state.flags, startActivity, finish);
             flow.start();
-          }, cfg.gateWaitMs);
-        }, cfg.gateDelayMs);
+          }, cfg.gateDelayMs);
+        }, 1000);
       }
 
       if (!statsTimer) {
         statsTimer = setInterval(() => {
           if (done || !state.connected) return;
-          log('info', 'main', 'stats', {
-            mode: cfg.mode, ready: state.ready,
-            guard: guard ? `sent:${guard.sent}/dropped:${guard.dropped}` : 'none',
-            rssMb: Math.round(process.memoryUsage().rss / 1048576)
-          });
+          log('info', 'main', 'stats', { mode: cfg.mode, ready: state.ready, rssMb: Math.round(process.memoryUsage().rss / 1048576) });
         }, 60000);
       }
     });
@@ -323,13 +274,10 @@ function runSession(state, signal, events) {
         const foods = (bot.registry?.foodsByName) || {};
         const item = bot.inventory.items().find(i => foods[i.name]);
         if (!item) return;
-        eating = true;
-        await bot.equip(item, 'hand');
-        await bot.consume();
-        eating = false;
-      } catch(e) { eating = false; }
+        eating = true; await bot.equip(item, 'hand'); await bot.consume(); eating = false;
+      } catch (e) { eating = false; }
     });
-    bot.on('death', () => { try { bot.respawn(); } catch(e) {} });
+    bot.on('death', () => { try { bot.respawn(); } catch (e) {} });
     bot.on('kicked', (r) => log('warn', 'main', 'kicked', { reason: r }));
     bot.on('error', (err) => log('error', 'main', 'error', { msg: err.message }));
     bot.on('end', (r) => finish(r || 'ended'));
@@ -340,15 +288,12 @@ function runSession(state, signal, events) {
 
 const events = new EventEmitter();
 const shutdown = new AbortController();
-const startedAt = Date.now();
 const state = { connected: false, ready: false, sessions: 0, lastReason: null, attempt: 0, flags: {} };
 
 const server = http.createServer((req, res) => {
-  const p = (req.url || '/').split('?')[0];
   const status = state.connected ? (state.ready ? 'online' : 'joining') : 'reconnecting';
-  const body = { status, username: cfg.username, rssMb: Math.round(process.memoryUsage().rss / 1048576) };
   res.writeHead(200, { 'content-type': 'application/json' });
-  res.end(JSON.stringify(body));
+  res.end(JSON.stringify({ status, username: cfg.username, rssMb: Math.round(process.memoryUsage().rss / 1048576) }));
 });
 
 events.on('ready', () => log('info', 'main', '✅ BOT IS ONLINE AND AFK'));
@@ -370,12 +315,9 @@ async function main() {
 
   while (!shutdown.signal.aborted) {
     state.flags = { originReg: false, originReady: false };
-    const t0 = Date.now();
     const result = await runSession(state, shutdown.signal, events);
-    const uptime = Date.now() - t0;
     if (shutdown.signal.aborted) break;
-
-    state.attempt = uptime > cfg.resetAfter ? 0 : state.attempt + 1;
+    state.attempt++;
     const delay = Math.min(cfg.retryMax, cfg.retryMin * Math.pow(2, state.attempt));
     log('warn', 'main', 'session ended', { reason: result.reason, retryInMs: delay });
     await sleep(delay, shutdown.signal);
@@ -386,5 +328,4 @@ async function main() {
 process.on('SIGTERM', () => shutdown.abort());
 process.on('SIGINT', () => shutdown.abort());
 process.on('uncaughtException', (e) => { log('error', 'main', 'fatal', { msg: e.message }); shutdown.abort(); });
-
 main().catch(err => { log('error', 'main', 'fatal', { msg: err.message }); process.exit(1); });
