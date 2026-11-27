@@ -1,37 +1,26 @@
-'use strict';
+const fetch = require('node-fetch');
+const config = require('./config');
+const { log } = require('./logger');
 
-const { createLogger } = require('./logger');
-const log = createLogger('notify');
-
-/** Discord webhook — chỉ gửi ra, không nhận lệnh. Không có URL -> bỏ qua. */
-function createNotifier(url) {
-  if (!url) return { send: () => Promise.resolve() };
-  let queue = Promise.resolve();
-
-  async function post(content) {
-    const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), 10000);
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ content: content.slice(0, 1900) }),
-        signal: ac.signal,
-      });
-      if (!res.ok) log.warn('webhook failed', { status: res.status });
-    } catch (err) {
-      log.warn('webhook error', { msg: err.message });
-    } finally {
-      clearTimeout(timer);
-    }
+async function sendDiscord(message) {
+  if (!config.discord.webhook) {
+    log('notify', `No Discord webhook. Console only: ${message}`);
+    return;
   }
 
-  return {
-    send(content) {
-      queue = queue.then(() => post(content)).catch(() => {});
-      return queue;
-    },
-  };
+  try {
+    await fetch(config.discord.webhook, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        content: message,
+        username: 'MC Bot',
+      }),
+    });
+    log('notify', `Đã gửi Discord: ${message}`);
+  } catch (err) {
+    log('notify', `Lỗi gửi Discord: ${err.message}`, '⚠️');
+  }
 }
 
-module.exports = { createNotifier };
+module.exports = { sendDiscord };
