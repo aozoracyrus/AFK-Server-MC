@@ -1,11 +1,5 @@
 'use strict';
 
-/* ============================================================================
-   mc-afk-bot v10 — Hoàn toàn tự động (Zero Config Password)
-   Tối ưu cho FadeHost 256MB RAM. Không lưu file, không cần ENV password.
-   Quy trình: Gate -> /browser join -> Transfer -> Auto Register/Login -> AFK
-   ========================================================================== */
-
 const http = require('node:http');
 const { EventEmitter } = require('node:events');
 const mineflayer = require('mineflayer');
@@ -25,8 +19,6 @@ function cmpVersion(a, b) {
   return 0;
 }
 
-// --- TỰ ĐỘNG SINH MẬT KHẨU ---
-// Tạo mật khẩu cố định, phức tạp dựa trên tên bot. Không cần lưu file, không cần ENV.
 function getAutoPassword(username) {
   const salt = "FadeHost_MC_Bot_Secure_Salt_2024";
   let hash = 0;
@@ -34,7 +26,7 @@ function getAutoPassword(username) {
   for (let i = 0; i < text.length; i++) {
     const char = text.charCodeAt(i);
     hash = ((hash << 5) - hash) + char;
-    hash = hash & hash; 
+    hash = hash & hash;
   }
   const absHash = Math.abs(hash).toString(36).toUpperCase().padEnd(6, 'X');
   return `Auto_${absHash}_${username.substring(0, 4)}`;
@@ -46,7 +38,7 @@ const MODE_ENV = str(process.env.AFK_MODE, 'auto').toLowerCase();
 
 const cfg = {
   username: str(process.env.MC_USERNAME, 'Guardians'),
-  autoPassword: getAutoPassword(process.env.MC_USERNAME || 'Guardians'), // Mật khẩu tự sinh
+  autoPassword: getAutoPassword(process.env.MC_USERNAME || 'Guardians'),
   clientVersion: str(process.env.MC_VERSION, '26.1'),
   auth: str(process.env.MC_AUTH, 'offline').toLowerCase(),
 
@@ -55,17 +47,15 @@ const cfg = {
   gateEndpoint: str(process.env.GATE_ENDPOINT, 'mzero-263'),
   gateJoinCmd: str(process.env.GATE_JOIN_CMD, '/browser join {endpoint}'),
   gateDelayMs: num(process.env.GATE_DELAY_MS, 3000),
-  gateTimeoutMs: num(process.env.GATE_TIMEOUT_MS, 30000),
+  gateWaitMs: num(process.env.GATE_WAIT_MS, 5000),
 
   originRegCmd: '/register {password} {password}',
   originLoginCmd: '/login {password}',
-  originFirstDelay: num(process.env.ORIGIN_FIRST_DELAY || 5000, 5000),
-  originStepGap: num(process.env.ORIGIN_STEP_GAP || 5000, 5000),
+  originFirstDelay: num(process.env.ORIGIN_FIRST_DELAY || 2000, 2000),
   originSettle: num(process.env.ORIGIN_SETTLE || 4000, 4000),
   originTimeout: num(process.env.ORIGIN_TIMEOUT || 45000, 45000),
 
   minGap: num(process.env.MC_MIN_GAP, 12000),
-  transferGrace: num(process.env.MC_TRANSFER_GRACE, 2500),
   tickEnd: bool(process.env.MC_TICK_END, true),
   viewDist: str(process.env.MC_VIEW_DIST, 'tiny'),
   spawnTimeout: num(process.env.MC_SPAWN_TIMEOUT, 90000),
@@ -84,7 +74,7 @@ const cfg = {
 
 function validate() {
   const e = [];
-  if (!cfg.username || cfg.username.length > 16 || !/^[A-Za-z0-9_]+$/.test(cfg.username)) e.push('MC_USERNAME invalid (A-Z, 0-9, _, max 16 chars)');
+  if (!cfg.username || cfg.username.length > 16 || !/^[A-Za-z0-9_]+$/.test(cfg.username)) e.push('MC_USERNAME invalid');
   if (!['offline', 'microsoft'].includes(cfg.auth)) e.push('MC_AUTH invalid');
   if (!cfg.gateHost || !cfg.gateEndpoint) e.push('GATE config missing');
   if (cfg.gateJoinCmd.indexOf('{endpoint}') === -1) e.push('GATE_JOIN_CMD missing {endpoint}');
@@ -101,7 +91,6 @@ const log = (level, scope, msg, meta) => {
   if (level === 'error') console.error(line); else console.log(line);
 };
 
-// Guard cho 26.3 (Chặn packet di chuyển để không bị kick)
 const MOVE_PKTS = new Set(['position', 'position_look', 'look', 'flying']);
 function installGuard(bot, mode, tickEnd) {
   const client = bot._client;
@@ -130,14 +119,13 @@ const RX = {
   loginOk: /successfully logged in|already logged in|logged in successfully|đăng nhập thành công/i,
 };
 
-// Flow xử lý đăng ký/đăng nhập tự động ở Server Gốc
 function createOriginFlow(send, infoObj, onReady, onFatal) {
   let registered = infoObj.originReg || false;
   let ready = false, stopped = false;
   let lastSent = 0;
   let attempt = 0;
   const timers = new Set();
-  const pass = cfg.autoPassword; // Dùng mật khẩu tự sinh
+  const pass = cfg.autoPassword;
 
   const later = (fn, ms) => {
     const t = setTimeout(() => { timers.delete(t); fn(); }, ms);
@@ -159,7 +147,7 @@ function createOriginFlow(send, infoObj, onReady, onFatal) {
   const markReady = (why) => {
     if (ready || stopped) return;
     ready = true; infoObj.originReady = true;
-    clear(); log('info', 'origin', 'ready & AFK started', { why, registered, passUsed: pass });
+    clear(); log('info', 'origin', 'ready & AFK started', { why, registered });
     onReady();
   };
 
@@ -173,57 +161,34 @@ function createOriginFlow(send, infoObj, onReady, onFatal) {
     if (stopped || ready) return;
     const ok = sendCmd('reg', cfg.originRegCmd);
     infoObj.originReg = true;
-    // Sau khi register, server thường tự đăng nhập. Ta chờ một chút để xác nhận.
-    later(() => {
-        if (!ready) markReady('settle_after_register');
-    }, cfg.originSettle);
+    later(() => { if (!ready) markReady('settle_after_register'); }, cfg.originSettle);
   };
 
   const handleMessage = (raw) => {
     if (stopped) return;
     const m = String(raw || '');
-    
-    if (RX.wrong.test(m)) { 
-        stopped = true; clear(); onFatal('wrong-password (Server đã có acc này nhưng mk khác)'); return; 
-    }
-    if (RX.regOk.test(m)) { 
-        infoObj.originReg = true; 
-        markReady('registered_successfully'); 
-        return; 
-    }
-    if (RX.regDup.test(m)) { 
-        infoObj.originReg = true; 
-        doLogin(); // Đã có acc, chuyển sang login
-        return; 
-    }
-    if (RX.loginOk.test(m)) { 
-        infoObj.originReg = true; 
-        markReady('login_success'); 
-        return; 
-    }
-    if (RX.needReg.test(m)) { 
-        infoObj.originReg = false; 
-        doRegister(); 
-    }
+    if (RX.wrong.test(m)) { stopped = true; clear(); onFatal('wrong-password'); return; }
+    if (RX.regOk.test(m)) { infoObj.originReg = true; markReady('registered_successfully'); return; }
+    if (RX.regDup.test(m)) { infoObj.originReg = true; doLogin(); return; }
+    if (RX.loginOk.test(m)) { infoObj.originReg = true; markReady('login_success'); return; }
+    if (RX.needReg.test(m)) { infoObj.originReg = false; doRegister(); }
   };
 
   const start = () => {
     log('info', 'origin', 'start auth flow', { registered, autoPass: pass });
-    later(() => { 
-        if (registered) doLogin(); 
-        else doRegister(); 
-    }, cfg.originFirstDelay);
+    later(() => { if (registered) doLogin(); else doRegister(); }, cfg.originFirstDelay);
     later(() => markReady('fallback_timeout'), cfg.originTimeout);
   };
 
   return { start, stop: () => { stopped = true; clear(); }, handleMessage };
 }
 
-function runSession(stage, target, state, signal, events) {
+function runSession(state, signal, events) {
   return new Promise((resolve) => {
-    let done = false, guard = null, flow = null, transferTo = null;
-    let afkTimer = null, spawnTimer = null, statsTimer = null, transferTimer = null;
+    let done = false, guard = null, flow = null;
+    let afkTimer = null, spawnTimer = null, statsTimer = null;
     let spawnCount = 0, activityStarted = false, eating = false;
+    let gateJoinSent = false;
     const pending = new Set();
 
     const later = (fn, ms) => {
@@ -231,25 +196,25 @@ function runSession(stage, target, state, signal, events) {
       pending.add(t); return t;
     };
 
-    log('info', 'main', 'connecting', { target: target.host + ':' + target.port, user: cfg.username });
+    log('info', 'main', 'connecting', { target: cfg.gateHost + ':' + cfg.gatePort, user: cfg.username });
 
     let bot;
     try {
       bot = mineflayer.createBot({
-        host: target.host, port: target.port, username: cfg.username, auth: cfg.auth,
+        host: cfg.gateHost, port: cfg.gatePort, username: cfg.username, auth: cfg.auth,
         version: cfg.clientVersion || undefined, checkTimeoutInterval: 60000,
         hideErrors: true, logErrors: false,
       });
     } catch (err) {
       log('error', 'main', 'createBot failed', { msg: err.message });
-      resolve({ reason: 'createBot: ' + err.message, transfer: null });
+      resolve({ reason: 'createBot: ' + err.message });
       return;
     }
 
     const finish = (reason) => {
       if (done) return;
       done = true;
-      clearTimeout(afkTimer); clearTimeout(spawnTimer); clearTimeout(transferTimer);
+      clearTimeout(afkTimer); clearTimeout(spawnTimer);
       clearInterval(statsTimer);
       for (const t of pending) clearTimeout(t);
       pending.clear();
@@ -258,8 +223,8 @@ function runSession(stage, target, state, signal, events) {
       state.connected = false; state.ready = false; state.lastReason = reason;
       try { bot.quit('bye'); } catch(e) {}
       try { bot.end(); } catch(e) {}
-      if (!transferTo) events.emit('offline', { reason });
-      resolve({ reason, transfer: transferTo });
+      events.emit('offline', { reason });
+      resolve({ reason });
     };
 
     const onAbort = () => finish('shutdown');
@@ -269,16 +234,6 @@ function runSession(stage, target, state, signal, events) {
     }
 
     const safeChat = (cmd) => { if (!done) try { bot.chat(cmd); } catch(e) {} };
-
-    try {
-      bot._client.on('transfer', (pkt) => {
-        if (pkt && pkt.host) {
-          log('info', 'main', 'transfer received', { host: pkt.host, port: pkt.port || 25565 });
-          transferTo = { host: pkt.host, port: pkt.port || 25565 };
-          finish('transfer');
-        }
-      });
-    } catch(e) {}
 
     const startActivity = () => {
       if (activityStarted || done) return;
@@ -316,52 +271,43 @@ function runSession(stage, target, state, signal, events) {
     bot.on('spawn', () => {
       spawnCount++;
       clearTimeout(spawnTimer);
-      
       if (!guard && cfg.needsGuard && cfg.mode !== 'native') {
         guard = installGuard(bot, cfg.mode, cfg.tickEnd);
       }
       if (cfg.mode === 'freeze') { try { bot.physicsEnabled = false; } catch(e) {} }
       try { if (typeof bot.setSettings === 'function') bot.setSettings({ viewDistance: cfg.viewDist }); } catch(e) {}
 
-      state.connected = true; state.stage = stage;
+      state.connected = true;
       state.lastConnectedAt = new Date().toISOString();
       if (spawnCount === 1) state.sessions++;
 
       log('info', 'main', 'spawned', { n: spawnCount, ping: bot.player?.ping });
 
       if (spawnCount === 1) {
-        events.emit('online', { stage, sessions: state.sessions });
+        events.emit('online', { sessions: state.sessions });
         
-        if (stage === 'gate') {
-          log('info', 'gate', 'waiting to send join command');
+        // Stage 1: Gửi /browser join
+        log('info', 'gate', 'sending join command');
+        later(() => {
+          const cmd = cfg.gateJoinCmd.replace('{endpoint}', cfg.gateEndpoint);
+          log('info', 'gate', 'send', { cmd: cmd.split(' ')[0] });
+          safeChat(cmd);
+          gateJoinSent = true;
+          
+          // Stage 2: Đợi 5 giây rồi bắt đầu origin flow (không cần chờ transfer packet)
           later(() => {
-            const cmd = cfg.gateJoinCmd.replace('{endpoint}', cfg.gateEndpoint);
-            log('info', 'gate', 'send', { cmd: cmd.split(' ')[0] });
-            safeChat(cmd);
-            state.flags.gateJoinSent = true;
-            transferTimer = setTimeout(() => { 
-              if (!transferTo && !done) {
-                log('warn', 'gate', 'no transfer packet received, retrying');
-                finish('gate-no-transfer'); 
-              }
-            }, cfg.gateTimeoutMs);
-          }, cfg.gateDelayMs);
-        } else {
-          flow = createOriginFlow(safeChat, state.flags, startActivity, finish);
-          flow.start();
-        }
-      } else if (stage === 'gate' && state.flags.gateJoinSent && !transferTo) {
-        log('info', 'main', 'in-place switch detected, treating as origin');
-        stage = 'origin'; state.stage = 'origin';
-        flow = createOriginFlow(safeChat, state.flags, startActivity, finish);
-        flow.start();
+            log('info', 'main', 'starting origin flow after gate wait');
+            flow = createOriginFlow(safeChat, state.flags, startActivity, finish);
+            flow.start();
+          }, cfg.gateWaitMs);
+        }, cfg.gateDelayMs);
       }
 
       if (!statsTimer) {
         statsTimer = setInterval(() => {
           if (done || !state.connected) return;
           log('info', 'main', 'stats', {
-            stage, mode: cfg.mode, ready: state.ready,
+            mode: cfg.mode, ready: state.ready,
             guard: guard ? `sent:${guard.sent}/dropped:${guard.dropped}` : 'none',
             rssMb: Math.round(process.memoryUsage().rss / 1048576)
           });
@@ -370,7 +316,6 @@ function runSession(stage, target, state, signal, events) {
     });
 
     bot.on('messagestr', (msg) => { if (flow) flow.handleMessage(msg); });
-    
     bot.on('health', async () => {
       if (eating || !cfg.autoEat || !state.connected || !activityStarted) return;
       if (typeof bot.food !== 'number' || bot.food > 17) return;
@@ -384,7 +329,6 @@ function runSession(stage, target, state, signal, events) {
         eating = false;
       } catch(e) { eating = false; }
     });
-    
     bot.on('death', () => { try { bot.respawn(); } catch(e) {} });
     bot.on('kicked', (r) => log('warn', 'main', 'kicked', { reason: r }));
     bot.on('error', (err) => log('error', 'main', 'error', { msg: err.message }));
@@ -394,17 +338,16 @@ function runSession(stage, target, state, signal, events) {
   });
 }
 
-// Supervisor
 const events = new EventEmitter();
 const shutdown = new AbortController();
 const startedAt = Date.now();
-const state = { connected: false, ready: false, stage: 'init', sessions: 0, lastReason: null, attempt: 0, flags: {} };
+const state = { connected: false, ready: false, sessions: 0, lastReason: null, attempt: 0, flags: {} };
 
 const server = http.createServer((req, res) => {
   const p = (req.url || '/').split('?')[0];
   const status = state.connected ? (state.ready ? 'online' : 'joining') : 'reconnecting';
-  const body = { status, stage: state.stage, username: cfg.username, rssMb: Math.round(process.memoryUsage().rss / 1048576) };
-  res.writeHead(p === '/ready' && state.connected && state.ready ? 200 : 200, { 'content-type': 'application/json' });
+  const body = { status, username: cfg.username, rssMb: Math.round(process.memoryUsage().rss / 1048576) };
+  res.writeHead(200, { 'content-type': 'application/json' });
   res.end(JSON.stringify(body));
 });
 
@@ -426,27 +369,11 @@ async function main() {
   log('info', 'main', 'http listening', { port: cfg.httpPort });
 
   while (!shutdown.signal.aborted) {
-    let stage = 'gate';
-    let target = { host: cfg.gateHost, port: cfg.gatePort };
-    
-    state.flags = { gateJoinSent: false, originReg: false, originReady: false };
+    state.flags = { originReg: false, originReady: false };
     const t0 = Date.now();
-    const result = await runSession(stage, target, state, shutdown.signal, events);
+    const result = await runSession(state, shutdown.signal, events);
     const uptime = Date.now() - t0;
     if (shutdown.signal.aborted) break;
-
-    if (result.transfer && !shutdown.signal.aborted) {
-      log('info', 'main', 'hop to origin', { target: result.transfer.host + ':' + result.transfer.port });
-      await sleep(cfg.transferGrace, shutdown.signal);
-      if (shutdown.signal.aborted) break;
-      
-      const r2 = await runSession('origin', result.transfer, state, shutdown.signal, events);
-      if (shutdown.signal.aborted) break;
-      
-      state.attempt = uptime > cfg.resetAfter ? 0 : state.attempt + 1;
-      await sleep(Math.min(cfg.retryMax, cfg.retryMin * Math.pow(2, state.attempt)), shutdown.signal);
-      continue;
-    }
 
     state.attempt = uptime > cfg.resetAfter ? 0 : state.attempt + 1;
     const delay = Math.min(cfg.retryMax, cfg.retryMin * Math.pow(2, state.attempt));
