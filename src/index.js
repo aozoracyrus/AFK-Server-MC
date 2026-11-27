@@ -9,6 +9,13 @@ const bool = (v, d = false) => (v === undefined || v === '' ? d : /^(1|true|yes|
 const str = (v, d) => (v === undefined || v === '' ? d : String(v).trim());
 const rand = (min, max) => Math.floor(min + Math.random() * (max - min));
 
+// THAY TẤT CẢ placeholder (replace() chỉ thay 1 cái -> bug /register)
+const fill = (tpl, map) => {
+  let out = tpl;
+  for (const k of Object.keys(map)) out = out.split(k).join(map[k]);
+  return out;
+};
+
 function cmpVersion(a, b) {
   const pa = String(a).split('.').map(Number);
   const pb = String(b).split('.').map(Number);
@@ -127,8 +134,9 @@ function createOriginFlow(send, infoObj, onReady, onFatal) {
     const now = Date.now();
     if (now - lastSent < cfg.minGap) return false;
     lastSent = now;
-    log('info', 'origin', 'send', { cmd: tpl.split(' ')[0], attempt: ++attempt });
-    send(tpl.replace('{password}', pass));
+    const payload = fill(tpl, { '{password}': pass }); // FIX: thay TẤT CẢ
+    log('info', 'origin', 'send', { cmd: payload, attempt: ++attempt });
+    send(payload);
     return true;
   };
 
@@ -152,7 +160,6 @@ function createOriginFlow(send, infoObj, onReady, onFatal) {
     if (RX.needReg.test(m)) { infoObj.originReg = false; doRegister(); }
   };
 
-  // GỬI NGAY, không delay — vì bot chỉ sống được ~1 giây trước khi bị kick
   const start = () => {
     log('info', 'origin', 'start auth (immediate)', { registered });
     if (registered) doLogin(); else doRegister();
@@ -242,14 +249,12 @@ function runSession(state, signal, events) {
       if (spawnCount === 1) state.sessions++;
       log('info', 'main', 'spawned', { n: spawnCount, ping: bot.player?.ping });
 
-      // Lần spawn đầu: gửi /browser join
       if (!joinSent) {
         joinSent = true;
         later(() => {
-          const cmd = cfg.gateJoinCmd.replace('{endpoint}', cfg.gateEndpoint);
-          log('info', 'gate', 'send', { cmd: cmd.split(' ')[0] });
+          const cmd = fill(cfg.gateJoinCmd, { '{endpoint}': cfg.gateEndpoint });
+          log('info', 'gate', 'send', { cmd });
           safeChat(cmd);
-          // KHÔNG chờ transfer packet. Sau 1.5s bắt đầu origin flow ngay.
           later(() => {
             log('info', 'main', 'origin flow start (no transfer wait)');
             flow = createOriginFlow(safeChat, state.flags, startActivity, finish);
