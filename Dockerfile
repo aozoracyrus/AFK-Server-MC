@@ -1,19 +1,10 @@
-FROM node:22-bookworm-slim
-
-ENV NODE_ENV=production \
-    PORT=8080 \
-    STATE_FILE=/data/state.json
+FROM node:20-alpine
 
 WORKDIR /app
 
 COPY package.json ./
-RUN npm install --omit=dev && npm cache clean --force
+RUN npm install
 
-COPY index.js ./
+COPY . .
 
-RUN mkdir -p /data && chown -R node:node /app /data
-
-USER node
-EXPOSE 8080
-
-CMD ["node", "--max-old-space-size=256", "index.js"]
+CMD ["node", "src/index.js"]
